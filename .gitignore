@@ -1,0 +1,13 @@
+# python
+__pycache__/
+*.pyc
+
+# venv
+.venv/
+
+# data outputs
+data/clean/
+reports/plots/
+
+# os
+.DS_Store
