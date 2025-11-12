@@ -1,0 +1,50 @@
+Week 6 Checkpoint - Expense Analyzer
+- Nandini Gandhi
+
+How to Run:
+pip install -r requirements.txt
+python run.py clean
+python run.py categorize
+streamlit run app.py
+
+
+What I Had Before This Checkpoint:
+
+* Data cleaning pipeline that reads bank CSVs and standardizes transaction formats
+* Rule-based categorization using bank labels, keywords, and fuzzy matching
+* Streamlit dashboard with basic transaction viewing
+* Monthly summaries and static charts (pie chart, heatmap, trend lines)
+
+
+What I added:
+
+* Added Settings tab with two features:
+  - Merchant rules: pick a merchant and change its category for the selected date range
+  - One-time fixes: fix the category for a single transaction
+  - If you changed one of them in Merchant/One time fix categories, you can only change them back in that category
+
+* Built forecasting system:
+  - Uses IQR method to remove outliers from historical spending
+  - Predicts monthly spending by category and overall total
+  - Users can exclude specific months or categories from predictions
+  - Shows confidence ranges using standard deviation
+
+* Improved the dashboard:
+  - Split into 4 pages: Home, Category Detail, Forecast, Settings
+  - Added merchant search on the home page
+  - Category detail page has sorting by amount, date, or transaction count
+  - Pie charts and trend line graphs
+  - Detailed transaction tables with filtering
+
+* Better data navigation:
+  - Users can search for merchants and see all their transactions
+  - Filter transactions by amount and date range
+  - View top merchants in each category
+
+
+Next Steps:
+
+* Add a file uploader to the app so users can upload CSV files (or if time permits- pdf files which can be converted to csvs) directly instead of placing them in the data/raw folder
+* Let users upload multiple CSVs (so multiple credits cards/statements) and combine them into one dataset
+* Figure out how to show money credited (this is currently only showing expenses)
+* Make the UI much better looking
