@@ -31,62 +31,61 @@ def parse_date(value):
         return pd.NaT
 
 
-def clean_transactions(raw_path, save_path):
-    """Read raw CSV and clean it."""
+def clean_transactions(raw_path):
+    """Read a single raw CSV and return cleaned DataFrame (not saved)."""
     print(f"\nReading: {raw_path}")
     df = pd.read_csv(raw_path)
-    
-    # find columns
+
     date_col = find_column(df, ["transaction date", "date", "posted date", "post date"])
     desc_col = find_column(df, ["description", "details", "memo"])
     amt_col = find_column(df, ["amount", "transaction amount", "value"])
     bank_cat_col = find_column(df, ["category"])
-    
+
     if not date_col or not desc_col or not amt_col:
         raise ValueError("Could not find required columns (date, description, amount)")
-    
+
     out = df.copy()
-    
-    # parse dates
     out["date"] = out[date_col].apply(parse_date)
-    
-    # description
     out["description"] = out[desc_col].astype(str)
-    
-    # amount - convert to numeric
     out["amount_signed"] = pd.to_numeric(out[amt_col], errors="coerce")
-    
-    # remove rows with missing data
     out = out.dropna(subset=["date", "description", "amount_signed"]).reset_index(drop=True)
-    
-    # calculate spend amount (positive)
     out["amount_spend"] = (-out["amount_signed"]).clip(lower=0)
     out["amount"] = out["amount_spend"]
-    
-    # include bank category if present
     if bank_cat_col:
         out["bank_category"] = out[bank_cat_col].astype(str)
-    
-    # sort by date
     out = out.sort_values("date").reset_index(drop=True)
-    
-    # save
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    out.to_csv(save_path, index=False)
-    print(f"Wrote: {save_path}")
-    
     return out
 
 
-def main():
-    """Find CSV in raw folder and clean it."""
-    csvs = [f for f in os.listdir(RAW_DIR) if f.endswith(".csv")]
+def clean_all(raw_dir=RAW_DIR, save_path=os.path.join(CLEAN_DIR, "transactions_clean.csv")):
+    """Clean all CSVs in raw_dir, add source column, concatenate, and save."""
+    csvs = [f for f in os.listdir(raw_dir) if f.endswith(".csv")]
     if not csvs:
         raise FileNotFoundError("No CSV files found in data/raw/")
-    
-    raw_path = os.path.join(RAW_DIR, csvs[0])
-    save_path = os.path.join(CLEAN_DIR, "transactions_clean.csv")
-    clean_transactions(raw_path, save_path)
+
+    frames = []
+    for fname in csvs:
+        path = os.path.join(raw_dir, fname)
+        try:
+            cleaned = clean_transactions(path)
+            cleaned["source"] = os.path.splitext(fname)[0]
+            frames.append(cleaned)
+        except Exception as e:
+            print(f"Skipping {fname}: {e}")
+
+    if not frames:
+        raise RuntimeError("No CSVs could be cleaned successfully")
+
+    combined = pd.concat(frames, ignore_index=True).sort_values("date").reset_index(drop=True)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    combined.to_csv(save_path, index=False)
+    print(f"Wrote combined cleaned file with {len(combined)} rows: {save_path}")
+    return combined
+
+
+def main():
+    """Clean all CSVs in raw folder (multi-file support)."""
+    clean_all()
 
 
 if __name__ == "__main__":

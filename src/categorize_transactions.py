@@ -173,11 +173,16 @@ def decide_category(row, one_off_map, merchant_map):
     """Decide what category this transaction should be."""
     txn_id = row["txn_id"]
     
-    # check if it's a credit (positive amount) - exclude these
+    # check if it's a credit (positive amount)
     try:
         amt = float(row.get("amount_signed") or 0)
         if amt > 0:
-            return "EXCLUDE", "credit"
+            # Check if it's a payment (credit card payoff) - exclude those
+            txn_type = str(row.get("Type", "")).lower()
+            if "payment" in txn_type:
+                return "EXCLUDE", "payment"
+            # Otherwise it's income
+            return "Income", "income"
     except:
         pass
     
