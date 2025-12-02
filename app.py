@@ -9,6 +9,11 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+# Ensure directories exist before imports
+os.makedirs("data/raw", exist_ok=True)
+os.makedirs("data/clean", exist_ok=True)
+os.makedirs("data/config", exist_ok=True)
+
 from src.plot_charts import _read_data, CLEAN_DIR
 from src.categorize_transactions import categorize
 from src.forecast import forecast_by_category, forecast_total_spend
