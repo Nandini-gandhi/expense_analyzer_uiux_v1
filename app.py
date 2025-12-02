@@ -1,7 +1,6 @@
 """Clean, intuitive expense tracking and forecasting app with graphs."""
 
 import os
-import sys
 import json
 import calendar
 import re
@@ -9,15 +8,6 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-
-# Ensure directories exist before imports
-os.makedirs("data/raw", exist_ok=True)
-os.makedirs("data/clean", exist_ok=True)
-os.makedirs("data/config", exist_ok=True)
-
-# Add project root to path to ensure imports work
-if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.plot_charts import _read_data, CLEAN_DIR
 from src.categorize_transactions import categorize
@@ -246,9 +236,9 @@ def _get_default_date_range():
     """Get October 1-31 as default date range."""
     today = pd.Timestamp.today()
     # Default to October of current year
-    october_start = pd.Timestamp(year=today.year, month=10, day=1).date()
-    october_end = pd.Timestamp(year=today.year, month=10, day=31).date()
-    return october_start, october_end
+    oct_start = pd.Timestamp(year=today.year, month=10, day=1).date()
+    oct_end = pd.Timestamp(year=today.year, month=10, day=31).date()
+    return oct_start, oct_end
 
 
 if selected_date_range is None:
@@ -276,7 +266,7 @@ elif mode == "home":
         st.header("Your Spending")
     
     with col2:
-        if st.button("⚙️ Features", key="settings_btn"):
+        if st.button("⚙️ Settings", key="settings_btn"):
             st.session_state["mode"] = "settings"
             st.rerun()
     
@@ -637,7 +627,7 @@ elif mode == "settings":
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.header("⚙️ Features")
+        st.header("⚙️ Settings")
     
     with col2:
         if st.button("← Back", key="back_settings"):
