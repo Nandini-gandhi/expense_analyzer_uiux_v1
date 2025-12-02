@@ -1,6 +1,7 @@
 """Clean, intuitive expense tracking and forecasting app with graphs."""
 
 import os
+import sys
 import json
 import calendar
 import re
@@ -13,6 +14,10 @@ import matplotlib.dates as mdates
 os.makedirs("data/raw", exist_ok=True)
 os.makedirs("data/clean", exist_ok=True)
 os.makedirs("data/config", exist_ok=True)
+
+# Add project root to path to ensure imports work
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.plot_charts import _read_data, CLEAN_DIR
 from src.categorize_transactions import categorize
