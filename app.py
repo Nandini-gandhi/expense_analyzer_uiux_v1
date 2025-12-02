@@ -12,9 +12,11 @@ import matplotlib.dates as mdates
 from src.plot_charts import _read_data, CLEAN_DIR
 from src.categorize_transactions import categorize
 from src.forecast import forecast_by_category, forecast_total_spend
+from src.clean_transactions import clean_all
 
 OVERRIDES_JSON = "data/config/overrides.json"
 ONE_OFF_CSV = "data/config/one_off_overrides.csv"
+RAW_DIR = "data/raw"
 
 st.set_page_config(page_title="Expense Analyzer", layout="wide")
 st.title("💰 Expense Analyzer")
@@ -35,8 +37,8 @@ def _load_clean_df():
     """Load cleaned transactions."""
     path = os.path.join(CLEAN_DIR, "transactions_clean.csv")
     if not os.path.exists(path):
-        st.error("Missing data/clean/transactions_clean.csv. Run `python run.py clean` first.")
-        st.stop()
+        # Return empty dataframe; caller decides whether to trigger upload or cleaning.
+        return pd.DataFrame(columns=["date","description","amount_signed","amount_spend","category"])
     df = pd.read_csv(path, parse_dates=["date"])
     return df
 
@@ -108,12 +110,77 @@ def _recompute_and_refresh():
     return df_cat
 
 
-if "df" not in st.session_state:
+def _reclean_and_refresh():
+    """Run multi-file cleaning then categorize and refresh state."""
     try:
-        st.session_state["df"] = _load_cat_df()
+        clean_all()
     except Exception as e:
-        print(f"Error loading: {e}")
-        _recompute_and_refresh()
+        st.error(f"Cleaning failed: {e}")
+        return None
+    return _recompute_and_refresh()
+
+
+def _save_uploaded_files(uploaded_files):
+    """Persist uploaded files into data/raw with unique names."""
+    os.makedirs(RAW_DIR, exist_ok=True)
+    saved = []
+    for uf in uploaded_files:
+        base_name = os.path.splitext(uf.name)[0]
+        safe_base = re.sub(r"[^A-Za-z0-9_-]", "_", base_name) or "uploaded"
+        fname = safe_base + ".csv"
+        # ensure uniqueness
+        counter = 1
+        while os.path.exists(os.path.join(RAW_DIR, fname)):
+            fname = f"{safe_base}_{counter}.csv"
+            counter += 1
+        full_path = os.path.join(RAW_DIR, fname)
+        with open(full_path, "wb") as f:
+            f.write(uf.getbuffer())
+        saved.append(fname)
+    return saved
+
+
+def _delete_raw_file(filename):
+    """Delete a raw CSV and refresh dataset."""
+    path = os.path.join(RAW_DIR, filename)
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
+
+
+########################
+# Detect raw files early
+########################
+try:
+    existing_raw = [f for f in os.listdir(RAW_DIR) if f.endswith('.csv')]
+except Exception:
+    existing_raw = []
+
+if not existing_raw:
+    st.session_state["mode"] = "upload"
+
+########################
+# Initialize df
+########################
+if "df" not in st.session_state:
+    if st.session_state.get("mode") == "upload":
+        st.session_state["df"] = pd.DataFrame(columns=["date","merchant","amount_spend","category"])
+    else:
+        cat_path = os.path.join(CLEAN_DIR, "transactions_categorized.csv")
+        if os.path.exists(cat_path):
+            try:
+                st.session_state["df"] = _load_cat_df()
+            except Exception as e:
+                print(f"Error loading categorized file: {e}")
+                st.session_state["df"] = pd.DataFrame(columns=["date","merchant","amount_spend","category"])
+        else:
+            # No categorized file yet; attempt cleaning if raw files exist
+            if existing_raw:
+                _reclean_and_refresh()
+            else:
+                st.session_state["mode"] = "upload"
+                st.session_state["df"] = pd.DataFrame(columns=["date","merchant","amount_spend","category"])
 
 if "mode" not in st.session_state:
     st.session_state["mode"] = "home"
@@ -124,39 +191,54 @@ if "selected_category" not in st.session_state:
 if "selected_date_range" not in st.session_state:
     st.session_state["selected_date_range"] = None
 
+if "selected_source" not in st.session_state:
+    st.session_state["selected_source"] = "All"
+
+if "initial_upload_done" not in st.session_state:
+    st.session_state["initial_upload_done"] = False
+
+# Detect initial no-raw-files state
+    try:
+        existing_raw = [f for f in os.listdir(RAW_DIR) if f.endswith('.csv')]
+    except Exception:
+        existing_raw = []
+
+if not existing_raw:
+    # Force reset to initial upload state if all raw files are gone
+    st.session_state["initial_upload_done"] = False
+    st.session_state["mode"] = "upload"
+
 df = st.session_state["df"]
-all_categories = sorted([c for c in df["category"].dropna().unique() if c != "EXCLUDE"])
+all_categories = sorted([c for c in df["category"].dropna().unique() if c not in ["EXCLUDE", "Income"]])
 
 mode = st.session_state["mode"]
 selected_category = st.session_state["selected_category"]
 selected_date_range = st.session_state["selected_date_range"]
 
-min_d = df["date"].min().date()
-max_d = df["date"].max().date()
+# Safe min/max date extraction (handles empty/placeholder df)
+if df.empty or "date" not in df.columns or not pd.api.types.is_datetime64_any_dtype(df["date"]):
+    today_date = pd.Timestamp.today().date()
+    min_d = today_date
+    max_d = today_date
+else:
+    _min_raw = df["date"].min()
+    _max_raw = df["date"].max()
+    if pd.isna(_min_raw) or pd.isna(_max_raw):
+        today_date = pd.Timestamp.today().date()
+        min_d = today_date
+        max_d = today_date
+    else:
+        min_d = pd.to_datetime(_min_raw).date()
+        max_d = pd.to_datetime(_max_raw).date()
 
 
 def _get_default_date_range():
-    """Get current month date range. If no transactions, go back one month."""
+    """Get October 1-31 as default date range."""
     today = pd.Timestamp.today()
-    month_start = today.replace(day=1).date()
-    _, last_day = calendar.monthrange(today.year, today.month)
-    month_end = today.replace(day=last_day).date()
-    
-    current_month_data = df[(df["date"].dt.date >= month_start) & (df["date"].dt.date <= month_end)]
-    
-    if len(current_month_data) > 0:
-        return month_start, month_end
-    
-    if today.month == 1:
-        prev_month = today.replace(year=today.year - 1, month=12)
-    else:
-        prev_month = today.replace(month=today.month - 1)
-    
-    prev_month_start = prev_month.replace(day=1).date()
-    _, last_day = calendar.monthrange(prev_month.year, prev_month.month)
-    prev_month_end = prev_month.replace(day=last_day).date()
-    
-    return prev_month_start, prev_month_end
+    # Default to October of current year
+    october_start = pd.Timestamp(year=today.year, month=10, day=1).date()
+    october_end = pd.Timestamp(year=today.year, month=10, day=31).date()
+    return october_start, october_end
 
 
 if selected_date_range is None:
@@ -164,14 +246,27 @@ if selected_date_range is None:
     selected_date_range = st.session_state["selected_date_range"]
 
 
-if mode == "home":
+if mode == "upload":
+    st.header("📤 Upload Your Transaction CSV(s)")
+    st.markdown("First time setup: upload one or more CSV files from your bank or cards.")
+    uploaded = st.file_uploader("Select CSV files", type=["csv"], accept_multiple_files=True)
+    if uploaded and st.button("Process Files", key="process_initial"):
+        saved = _save_uploaded_files(uploaded)
+        st.success(f"Saved {len(saved)} file(s): {', '.join(saved)}")
+        _reclean_and_refresh()
+        st.session_state["initial_upload_done"] = True
+        st.session_state["mode"] = "home"
+        st.rerun()
+    st.stop()
+
+elif mode == "home":
     col1, col2 = st.columns([2, 1])
     
     with col1:
         st.header("Your Spending")
     
     with col2:
-        if st.button("⚙️ Settings", key="settings_btn"):
+        if st.button("⚙️ Features", key="settings_btn"):
             st.session_state["mode"] = "settings"
             st.rerun()
     
@@ -185,6 +280,14 @@ if mode == "home":
         if len(date_range) == 2:
             start_d, end_d = date_range[0], date_range[1]
             st.session_state["selected_date_range"] = (start_d, end_d)
+
+        # Source filter (if multiple sources present)
+        if "source" in df.columns and df["source"].nunique() > 1:
+            sources = ["All"] + sorted(df["source"].dropna().unique().tolist())
+            chosen_source = st.selectbox("Data Source", sources, index=sources.index(st.session_state["selected_source"]) if st.session_state["selected_source"] in sources else 0)
+            st.session_state["selected_source"] = chosen_source
+        else:
+            st.session_state["selected_source"] = "All"
         
         st.subheader("🔍 Merchant Search")
         merchant_search = st.text_input("Search merchants:", "", key="home_merchant_search")
@@ -196,15 +299,26 @@ if mode == "home":
     start_d = pd.to_datetime(start_d)
     end_d = pd.to_datetime(end_d)
     
-    filtered_df = df[(df["date"] >= start_d) & (df["date"] <= end_d) & (df["category"] != "EXCLUDE")].copy()
+    base_filtered = df[(df["date"] >= start_d) & (df["date"] <= end_d) & (df["category"] != "EXCLUDE")].copy()
+    if st.session_state["selected_source"] != "All" and "source" in base_filtered.columns:
+        filtered_df = base_filtered[base_filtered["source"] == st.session_state["selected_source"]].copy()
+    else:
+        filtered_df = base_filtered
     
-    total_spend = filtered_df["amount_spend"].sum()
-    total_txns = len(filtered_df)
+    # Separate income and expenses
+    income_df = filtered_df[filtered_df["category"] == "Income"].copy()
+    expense_df = filtered_df[filtered_df["category"] != "Income"].copy()
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Spend", f"${total_spend:,.2f}")
-    col2.metric("Transactions", f"{total_txns:,}")
-    col3.metric("Avg/Txn", f"${total_spend/max(total_txns, 1):,.2f}")
+    total_income = income_df["amount_signed"].sum()
+    total_spend = expense_df["amount_spend"].sum()
+    total_txns = len(expense_df)
+    net_balance = total_income - total_spend
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Income", f"${total_income:,.2f}")
+    col2.metric("Total Spend", f"${total_spend:,.2f}")
+    col3.metric("Net Balance", f"${net_balance:,.2f}", delta=f"{net_balance:,.2f}")
+    col4.metric("Transactions", f"{total_txns:,}")
     
     st.markdown("---")
     
@@ -234,9 +348,21 @@ if mode == "home":
         else:
             st.info("No merchants match your search.")
     else:
-        # Category breakdown
+        # Income section
+        if len(income_df) > 0:
+            st.subheader("💰 Income")
+            total_income_display = income_df["amount_signed"].sum()
+            income_count = len(income_df)
+            
+            if st.button(f"**Total Income** · ${total_income_display:,.2f} ({income_count} transactions)", key="income_detail"):
+                st.session_state["mode"] = "category_detail"
+                st.session_state["selected_category"] = "Income"
+                st.rerun()
+            st.markdown("---")
+        
+        # Category breakdown (expenses only)
         cat_summary = (
-            filtered_df.groupby("category")
+            expense_df.groupby("category")
             .agg(total=("amount_spend", "sum"), count=("amount_spend", "count"))
             .sort_values("total", ascending=False)
             .reset_index()
@@ -268,7 +394,7 @@ if mode == "home":
         
         # Trend chart
         st.subheader("📈 Spending Trend")
-        daily_spend = filtered_df.groupby(filtered_df["date"].dt.date)["amount_spend"].sum().reset_index()
+        daily_spend = expense_df.groupby(expense_df["date"].dt.date)["amount_spend"].sum().reset_index()
         daily_spend.columns = ["date", "amount"]
         
         fig, ax = plt.subplots(figsize=(12, 4))
@@ -316,11 +442,21 @@ elif mode == "category_detail":
     start_d = pd.to_datetime(start_d)
     end_d = pd.to_datetime(end_d)
     
-    cat_df = df[
-        (df["category"] == selected_category) &
-        (df["date"] >= start_d) & (df["date"] <= end_d) &
-        (df["amount_spend"] >= min_amt) & (df["amount_spend"] <= max_amt)
-    ].copy()
+    # Handle Income category specially
+    if selected_category == "Income":
+        cat_df = df[
+            (df["category"] == "Income") &
+            (df["date"] >= start_d) & (df["date"] <= end_d)
+        ].copy()
+        # For income, show amount_signed (positive values) instead of amount_spend
+        cat_df["display_amount"] = cat_df["amount_signed"]
+    else:
+        cat_df = df[
+            (df["category"] == selected_category) &
+            (df["date"] >= start_d) & (df["date"] <= end_d) &
+            (df["amount_spend"] >= min_amt) & (df["amount_spend"] <= max_amt)
+        ].copy()
+        cat_df["display_amount"] = cat_df["amount_spend"]
     
     if search.strip():
         s = search.lower()
@@ -331,7 +467,7 @@ elif mode == "category_detail":
     
     # Apply sort
     if sort_by == "Amount (High→Low)":
-        cat_df = cat_df.sort_values("amount_spend", ascending=False)
+        cat_df = cat_df.sort_values("display_amount", ascending=False)
     elif sort_by == "Date (Newest)":
         cat_df = cat_df.sort_values("date", ascending=False)
     elif sort_by == "Transaction Count":
@@ -339,7 +475,7 @@ elif mode == "category_detail":
         cat_df["merchant_count"] = cat_df["merchant"].map(merchant_counts)
         cat_df = cat_df.sort_values("merchant_count", ascending=False)
     
-    cat_total = cat_df["amount_spend"].sum()
+    cat_total = cat_df["display_amount"].sum()
     cat_count = len(cat_df)
     
     col1, col2, col3, col4 = st.columns(4)
@@ -352,7 +488,7 @@ elif mode == "category_detail":
         st.markdown("---")
         
         st.subheader("📋 Transactions")
-        display = cat_df[["date", "merchant", "amount_spend", "description"]].copy()
+        display = cat_df[["date", "merchant", "display_amount", "description"]].copy()
         display.columns = ["Date", "Merchant", "Amount", "Description"]
         display["Amount"] = display["Amount"].apply(lambda x: f"${x:,.2f}")
         st.dataframe(display, use_container_width=True, hide_index=True)
@@ -364,7 +500,7 @@ elif mode == "category_detail":
         
         with col1:
             st.subheader("💳 Top Merchants")
-            top_merchants = cat_df.groupby("merchant")["amount_spend"].agg(["sum", "count"]).sort_values("sum", ascending=False).head(10)
+            top_merchants = cat_df.groupby("merchant")["display_amount"].agg(["sum", "count"]).sort_values("sum", ascending=False).head(10)
             
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.barh(range(len(top_merchants)), top_merchants["sum"], color="#ff7f0e")
@@ -378,7 +514,7 @@ elif mode == "category_detail":
         
         with col2:
             st.subheader("📅 Daily Trend")
-            daily = cat_df.groupby(cat_df["date"].dt.date)["amount_spend"].sum()
+            daily = cat_df.groupby(cat_df["date"].dt.date)["display_amount"].sum()
             
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.bar(range(len(daily)), daily.values, color="#2ca02c", alpha=0.7)
@@ -491,7 +627,7 @@ elif mode == "settings":
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.header("⚙️ Settings")
+        st.header("⚙️ Features")
     
     with col2:
         if st.button("← Back", key="back_settings"):
@@ -505,7 +641,7 @@ elif mode == "settings":
     start_d = pd.to_datetime(start_d)
     end_d = pd.to_datetime(end_d)
     
-    tab1, tab2 = st.tabs(["Merchant Rules", "One-Time Fixes"])
+    tab1, tab2, tab3 = st.tabs(["Merchant Rules", "One-Time Fixes", "Upload / Manage Files"])
     
     with tab1:
         st.subheader("🔗 Apply to All Transactions (in selected month)")
@@ -571,3 +707,38 @@ elif mode == "settings":
                     _recompute_and_refresh()
                     st.success(f"✅ Changed! '{matched['merchant']}' on {matched['date'].date()} → {new_cat}")
                     st.rerun()
+
+    with tab3:
+        st.subheader("📤 Upload Additional CSVs")
+        more = st.file_uploader("Add CSV file(s)", type=["csv"], accept_multiple_files=True, key="more_upload")
+        if more and st.button("Add & Refresh", key="add_more"):
+            saved = _save_uploaded_files(more)
+            st.success(f"Added: {', '.join(saved)}")
+            _reclean_and_refresh()
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("🗑️ Delete Existing Raw Files")
+        try:
+            current_raw = sorted([f for f in os.listdir(RAW_DIR) if f.endswith('.csv')])
+        except FileNotFoundError:
+            current_raw = []
+        if not current_raw:
+            st.info("No raw files found.")
+        else:
+            to_delete = st.selectbox("Select file to delete", current_raw, key="delete_select")
+            if to_delete and st.button("Delete File", key="delete_btn"):
+                ok = _delete_raw_file(to_delete)
+                if ok:
+                    st.success(f"Deleted {to_delete}")
+                    # Re-run cleaning only if files remain
+                    remaining = [f for f in os.listdir(RAW_DIR) if f.endswith('.csv')]
+                    if remaining:
+                        _reclean_and_refresh()
+                    else:
+                        st.warning("All files removed. Please upload new CSVs.")
+                        st.session_state["initial_upload_done"] = False
+                        st.session_state["mode"] = "upload"
+                    st.rerun()
+                else:
+                    st.error("File not found or could not delete.")
